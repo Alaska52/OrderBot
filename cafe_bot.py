@@ -474,36 +474,19 @@ async def today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-
 async def view_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     header, rows = load_orders_rows()
     if not rows:
         await update.message.reply_text("No orders yet!")
         return
 
-    pending = [r for r in rows if get_status(r) == "pending"]
-    if not pending:
-        await update.message.reply_text("✅ No pending orders! All caught up!")
-        return
+    text, markup = build_pending_message(rows)
 
-    text = "⏳ *Pending Orders* (tap an Order ID to mark READY):\n\n"
-    keyboard = []
-
-    for r in pending[:30]:
-        order_id = r[0]
-        customer = r[3] if len(r) > 3 else "Customer"
-        total = r[7] if len(r) > 7 else ""
-        text += f"• `{order_id}` — {customer} — {total}\n"
-        keyboard.append([InlineKeyboardButton(order_id, callback_data=f"ready:{order_id}")])
-
-    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")])
-
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
+    # Only pass reply_markup if it exists
+    if markup:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await update.message.reply_text(text, parse_mode="Markdown")
 
 async def pending_buttons_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -513,28 +496,12 @@ async def pending_buttons_callback(update: Update, context: ContextTypes.DEFAULT
     # Refresh
     if data == "pending:refresh":
         header, rows = load_orders_rows()
-        pending = [r for r in rows if get_status(r) == "pending"]
+        text, markup = build_pending_message(rows)
 
-        if not pending:
-            await query.edit_message_text("✅ No pending orders! All caught up!")
-            return
-
-        text = "⏳ *Pending Orders* (tap an Order ID to mark READY):\n\n"
-        keyboard = []
-        for r in pending[:30]:
-            order_id = r[0]
-            customer = r[3] if len(r) > 3 else "Customer"
-            total = r[7] if len(r) > 7 else ""
-            text += f"• `{order_id}` — {customer} — {total}\n"
-            keyboard.append([InlineKeyboardButton(order_id, callback_data=f"ready:{order_id}")])
-
-        keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")])
-
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        if markup:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+        else:
+            await query.edit_message_text(text, parse_mode="Markdown")
         return
 
     # Mark ready
@@ -561,7 +528,7 @@ async def pending_buttons_callback(update: Update, context: ContextTypes.DEFAULT
         rows[found_index] = row
         save_orders_rows(header, rows)
 
-        # Notify customer (chat_id stored in User ID column)
+        # Notify customer
         customer_name = row[3] if len(row) > 3 else "Customer"
         customer_chat_id = row[5] if len(row) > 5 else None
 
@@ -579,39 +546,79 @@ async def pending_buttons_callback(update: Update, context: ContextTypes.DEFAULT
             except Exception as e:
                 notify_error = str(e)
 
-        # Refresh list
+        # Refresh list (WITH DETAILS)
         header, rows = load_orders_rows()
-        pending = [r for r in rows if get_status(r) == "pending"]
+        text, markup = build_pending_message(rows)
 
-        if not pending:
-            msg = f"✅ Marked `{order_id}` as READY.\n\n✅ No pending orders left!"
-            if notify_error:
-                msg += f"\n\n⚠️ Notify failed: {notify_error}"
-            await query.edit_message_text(msg, parse_mode="Markdown")
-            return
-
-        text = f"✅ Marked `{order_id}` as READY.\n"
+        confirm = f"✅ Marked `{order_id}` as READY.\n"
         if notify_error:
-            text += f"⚠️ Notify failed: {notify_error}\n"
-        text += "\n⏳ *Pending Orders* (tap an Order ID to mark READY):\n\n"
+            confirm += f"⚠️ Notify failed: {notify_error}\n"
+        confirm += "\n"
 
-        keyboard = []
-        for r in pending[:30]:
-            oid = r[0]
-            customer = r[3] if len(r) > 3 else "Customer"
-            total = r[7] if len(r) > 7 else ""
-            text += f"• `{oid}` — {customer} — {total}\n"
-            keyboard.append([InlineKeyboardButton(oid, callback_data=f"ready:{oid}")])
+        final_text = confirm + text
 
-        keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")])
-
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        if markup:
+            await query.edit_message_text(final_text, parse_mode="Markdown", reply_markup=markup)
+        else:
+            await query.edit_message_text(final_text, parse_mode="Markdown")
         return
 
+MAX_PENDING_SHOW = 10  # show full details for this many pending orders (avoid Telegram 4096 limit)
+
+def format_items_multiline(items_text: str) -> str:
+    """Convert the CSV 'Items' field into bullet lines."""
+    items_text = (items_text or "").strip()
+    if not items_text:
+        return "   • (no items recorded)"
+
+    parts = [p.strip() for p in items_text.split(";") if p.strip()]
+    if not parts:
+        return f"   • {items_text}"
+
+    return "\n".join([f"   • {p}" for p in parts])
+
+def build_pending_message(rows):
+    """
+    Returns (text, keyboard) for pending orders view.
+    Keeps your existing callback_data: ready:<order_id> and pending:refresh.
+    """
+    pending = [r for r in rows if get_status(r) == "pending"]
+
+    if not pending:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")]])
+        return "✅ No pending orders! All caught up!", keyboard
+
+
+    shown = pending[:MAX_PENDING_SHOW]
+
+    text = "⏳ *Pending Orders* (tap a button to mark READY)\n\n"
+
+    keyboard = []
+    for idx, r in enumerate(shown, 1):
+        order_id = r[0] if len(r) > 0 else "UNKNOWN"
+        date = r[1] if len(r) > 1 else ""
+        time = r[2] if len(r) > 2 else ""
+        customer = r[3] if len(r) > 3 else "Customer"
+        username = r[4] if len(r) > 4 else ""
+        items = r[6] if len(r) > 6 else ""
+        total = r[7] if len(r) > 7 else ""
+
+        text += (
+            f"*{idx})* `{order_id}`\n"
+            f"👤 {customer} {username}\n"
+            f"🕒 {date} {time}\n"
+            f"💰 {total}\n"
+            f"{format_items_multiline(items)}\n\n"
+        )
+
+        # keep your current behavior: clicking this marks ready + notifies customer
+        keyboard.append([InlineKeyboardButton(f"✅ READY: {order_id}", callback_data=f"ready:{order_id}")])
+
+    if len(pending) > MAX_PENDING_SHOW:
+        text += f"_Showing {MAX_PENDING_SHOW} of {len(pending)} pending orders. Tap Refresh to update._\n"
+
+    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")])
+    return text, InlineKeyboardMarkup(keyboard)
 
 async def mark_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manual command fallback: /ready ORDER_ID"""
