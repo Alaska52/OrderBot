@@ -16,7 +16,8 @@ from telegram.ext import (
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s', level=logging.INFO)
 
 # States
-COFFEE_TYPE, TEMPERATURE, VARIETY, ADDONS, REVIEW, PAYMENT = range(6)
+#COFFEE_TYPE, TEMPERATURE, VARIETY, ADDONS, REVIEW, PAYMENT = range(6)
+COFFEE_TYPE, VARIETY, ADDONS, REVIEW, PAYMENT = range(5)
 
 # Menu
 MENU = {
@@ -98,41 +99,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return COFFEE_TYPE
 
 async def coffee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle coffee type selection."""
+    """Handle coffee type selection (temperature disabled)."""
     query = update.callback_query
     await query.answer()
-    
+
     ctype = query.data.replace("type_", "")
-    context.user_data['current'] = {'type': ctype, 'addons': []}
-    
-    # Skip temperature selection for Bakes
-    if ctype == "Bakes":
-        varieties = MENU[ctype]['varieties']
-        keyboard = []
-        for variety_name, price in varieties.items():
-            keyboard.append([InlineKeyboardButton(f"{variety_name} - ${price:.2f}", callback_data=f"var_{variety_name}")])
-        
-        await query.edit_message_text(
-            f"You selected: {ctype}\n\nChoose your item:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return VARIETY
-    
-    # For drinks, show temperature options
-    keyboard = [[InlineKeyboardButton(t, callback_data=f"temp_{t}")] for t in TEMPS]
+    context.user_data['current'] = {'type': ctype, 'addons': [], 'temp': 'N/A'}  # temp default
+
+    varieties = MENU[ctype]['varieties']
+    keyboard = []
+    for variety_name, price in varieties.items():
+        keyboard.append([
+            InlineKeyboardButton(f"{variety_name} - ${price:.2f}", callback_data=f"var_{variety_name}")
+        ])
+
     await query.edit_message_text(
-        f"You selected: {ctype}\n\nChoose temperature:",
+        f"You selected: {ctype}\n\nChoose your item:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return TEMPERATURE
+    return VARIETY
+
 
 async def temp_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle temperature selection."""
-    query = update.callback_query
-    await query.answer()
+#    """Handle temperature selection."""
+#    query = update.callback_query
+#    await query.answer()
     
-    temp = query.data.replace("temp_", "")
-    context.user_data['current']['temp'] = temp
+#    temp = query.data.replace("temp_", "")
+#    context.user_data['current']['temp'] = temp
     
     ctype = context.user_data['current']['type']
     varieties = MENU[ctype]['varieties']
@@ -143,7 +137,7 @@ async def temp_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         keyboard.append([InlineKeyboardButton(f"{variety_name} - ${price:.2f}", callback_data=f"var_{variety_name}")])
     
     await query.edit_message_text(
-        f"{ctype} - {temp}\n\nChoose your variety:",
+        #f"{ctype} - {temp}\n\nChoose your variety:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return VARIETY
@@ -589,7 +583,7 @@ def main() -> None:
         entry_points=[CommandHandler("start", start)],
         states={
         COFFEE_TYPE: [CallbackQueryHandler(coffee_selected, pattern=r"^type_")],
-        TEMPERATURE: [CallbackQueryHandler(temp_selected, pattern=r"^temp_")],
+        #TEMPERATURE: [CallbackQueryHandler(temp_selected, pattern=r"^temp_")],
         VARIETY: [CallbackQueryHandler(variety_selected, pattern=r"^var_")],
         ADDONS: [CallbackQueryHandler(addon_selected, pattern=r"^addon_")],
         REVIEW: [CallbackQueryHandler(review_action, pattern=r"^(add_more|checkout)$")],
