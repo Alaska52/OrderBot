@@ -44,11 +44,23 @@ MENU = {
 TEMPS = ['Hot', 'Iced']
 ADDONS_MENU = {
     'Oat Milk': 1.00,
-    'Extra Expresso Shot': 1.00,
+    'Extra Espresso Shot': 1.00,
     'Normal Sugar': 0.00,
     'Kosong (No Sugar)': 0.00,
     'Siew Dai (Less Sugar)': 0.00
 }
+
+def calc_addon_price(addons: list[str]) -> float:
+    """Sum add-on prices safely."""
+    total = 0.0
+    for a in addons:
+        if a in ADDONS_MENU:
+            total += float(ADDONS_MENU[a])
+        else:
+            # Unknown addon should not crash or silently break
+            logging.warning("Unknown addon '%s' not found in ADDONS_MENU", a)
+    return total
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start conversation and show coffee types."""
@@ -70,8 +82,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "• Earl Grey Madeleines - $5.00\n"
         "• Matcha Madeleines - $6.00\n\n"
         "🥛 *Add-ons:*\n"
-        "• Fresh Milk (+$0.50)\n"
         "• Oat Milk (+$1.00)\n"
+        "• Add Espresso Shot (+$1.00)\n"
         "• Sugar options (Normal/Kosong/Siew Dai)\n\n"
         "Let's start your order! 👇"
     )
@@ -192,44 +204,68 @@ async def variety_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ADDONS
 
 async def addon_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle addon selection."""
+    """Handle addon selection with live subtotal updates."""
     query = update.callback_query
-    
+    await query.answer()
+
+    curr = context.user_data["current"]
+
+    # Done selecting add-ons
     if query.data == "addon_done":
-        await query.answer()
-        
-        curr = context.user_data['current']
-        base_price = curr['base_price']  # Use the stored base price for this variety
-        addon_price = sum(ADDONS_MENU[a] for a in curr['addons'])
-        curr['price'] = base_price + addon_price
-        
-        context.user_data['cart'].append(curr.copy())
-        
-        total = sum(item['price'] for item in context.user_data['cart'])
+        base_price = float(curr.get("base_price", 0.0))
+        addon_price = calc_addon_price(curr.get("addons", []))
+
+        curr["addon_price"] = addon_price
+        curr["price"] = base_price + addon_price
+
+        context.user_data["cart"].append(curr.copy())
+
+        total = sum(float(item["price"]) for item in context.user_data["cart"])
+
         summary = "📋 Your Cart:\n\n"
-        for i, item in enumerate(context.user_data['cart'], 1):
-            addons_text = ", ".join(item['addons']) if item['addons'] else "None"
+        for i, item in enumerate(context.user_data["cart"], 1):
+            addons_text = ", ".join(item.get("addons", [])) if item.get("addons") else "None"
             summary += f"{i}. {item['variety']}\n"
             summary += f"   {item['temp']} {item['type']}\n"
             summary += f"   Add-ons: {addons_text}\n"
-            summary += f"   ${item['price']:.2f}\n\n"
+            summary += f"   Item Total: ${float(item['price']):.2f}\n\n"
         summary += f"Total: ${total:.2f}"
-        
+
         keyboard = [
             [InlineKeyboardButton("➕ Add Another Item", callback_data="add_more")],
-            [InlineKeyboardButton("💳 Proceed to Checkout", callback_data="checkout")]
+            [InlineKeyboardButton("💳 Proceed to Checkout", callback_data="checkout")],
         ]
-        
         await query.edit_message_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
         return REVIEW
-    else:
-        addon = query.data.replace("addon_", "")
-        if addon not in context.user_data['current']['addons']:
-            context.user_data['current']['addons'].append(addon)
-            await query.answer(f"✅ {addon} added!")
-        else:
-            await query.answer("Already added!")
-        return ADDONS
+
+    # Selecting an add-on
+    addon = query.data.replace("addon_", "", 1)
+
+    if addon not in curr["addons"]:
+        curr["addons"].append(addon)
+
+    # LIVE subtotal display
+    base_price = float(curr.get("base_price", 0.0))
+    addon_price = calc_addon_price(curr.get("addons", []))
+    item_total = base_price + addon_price
+
+    # Rebuild same add-on keyboard
+    keyboard = []
+    for name, price in ADDONS_MENU.items():
+        price_text = f" (+${price:.2f})" if price > 0 else ""
+        keyboard.append([InlineKeyboardButton(f"{name}{price_text}", callback_data=f"addon_{name}")])
+    keyboard.append([InlineKeyboardButton("✅ Done with add-ons", callback_data="addon_done")])
+
+    addons_text = ", ".join(curr["addons"]) if curr["addons"] else "None"
+    await query.edit_message_text(
+        f"Add-ons selected: {addons_text}\n"
+        f"Base: ${base_price:.2f}\n"
+        f"Add-ons: ${addon_price:.2f}\n"
+        f"Current item total: ${item_total:.2f}\n\n"
+        f"Tap more add-ons or press ✅ Done.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADDONS
 
 async def review_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle add more or checkout."""
@@ -262,7 +298,7 @@ async def review_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         
         try:
-            with open('assets/paynow_qr.pdf', 'rb') as photo:
+            with open('assets/paynow_qr.jpg', 'rb') as photo:
                 await context.bot.send_photo(
                     chat_id=query.message.chat_id,
                     photo=photo,
@@ -271,7 +307,7 @@ async def review_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         except FileNotFoundError:
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
-                text=f"⚠️ QR code image not found. Please add 'paynow_qr.pdf' to the 'assets' folder.\n\nAmount to pay: ${total:.2f}"
+                text=f"⚠️ QR code image not found. Please add 'paynow_qr.jpg' to the 'assets' folder.\n\nAmount to pay: ${total:.2f}"
             )
         
         return PAYMENT
@@ -552,12 +588,12 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            COFFEE_TYPE: [CallbackQueryHandler(coffee_selected, pattern="^type_")],
-            TEMPERATURE: [CallbackQueryHandler(temp_selected, pattern="^temp_")],
-            VARIETY: [CallbackQueryHandler(variety_selected, pattern="^var_")],
-            ADDONS: [CallbackQueryHandler(addon_selected, pattern="^addon_")],
-            REVIEW: [CallbackQueryHandler(review_action, pattern="^(add_more|checkout)$")],
-            PAYMENT: [MessageHandler(filters.TEXT | filters.PHOTO, payment_done)],
+        COFFEE_TYPE: [CallbackQueryHandler(coffee_selected, pattern=r"^type_")],
+        TEMPERATURE: [CallbackQueryHandler(temp_selected, pattern=r"^temp_")],
+        VARIETY: [CallbackQueryHandler(variety_selected, pattern=r"^var_")],
+        ADDONS: [CallbackQueryHandler(addon_selected, pattern=r"^addon_")],
+        REVIEW: [CallbackQueryHandler(review_action, pattern=r"^(add_more|checkout)$")],
+        PAYMENT: [MessageHandler(filters.TEXT | filters.PHOTO, payment_done)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
