@@ -22,33 +22,29 @@ COFFEE_TYPE, TEMPERATURE, VARIETY, ADDONS, REVIEW, PAYMENT = range(6)
 MENU = {
     'Matcha': {
         'varieties': {
-            'Original Matcha': 6.00,
-            'Strawberry Matcha': 7.00,
-            'Chocolate Matcha': 7.00,
-            'Hojicha': 6.50
+            'Iced Matcha': 7.00,
+            'Strawberry Matcha': 8.00
         }
     },
     'Coffee': {
         'varieties': {
-            'Latte': 5.00,
-            'Cappuccino': 5.00,
-            'Americano': 4.50,
-            'Mocha': 5.50
+            'Iced Black': 4.50,
+            'Ice White': 5.50
         }
     },
-    'Specialty': {
+    'Bakes': {
         'varieties': {
-            'Dirty Matcha': 7.50,
-            'Spanish Latte': 7.00,
-            'Brown Sugar Latte': 7.00
+            'Banana Bread': 4.00,
+            'Earl Grey Madeleines(4pcs)': 5.00,
+            'Matcha Madeleines(4pcs)': 6.00
         }
     }
 }
 
 TEMPS = ['Hot', 'Iced']
 ADDONS_MENU = {
-    'Fresh Milk': 0.50,
     'Oat Milk': 1.00,
+    'Extra Expresso Shot': 1.00,
     'Normal Sugar': 0.00,
     'Kosong (No Sugar)': 0.00,
     'Siew Dai (Less Sugar)': 0.00
@@ -61,22 +57,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     # Welcome message with menu info
     welcome_text = (
-        "☕ *Welcome to Home Cafe!*\n\n"
+        "☕ *Welcome to Kristy Krib's Home Cafe!*\n\n"
         "📋 *Our Menu:*\n\n"
         "*Matcha Drinks:*\n"
-        "• Original Matcha - $6.00\n"
-        "• Strawberry Matcha - $7.00\n"
-        "• Chocolate Matcha - $7.00\n"
-        "• Hojicha - $6.50\n\n"
+        "• Iced Matcha - $7.00\n"
+        "• Strawberry Matcha - $8.00\n"
         "*Coffee:*\n"
-        "• Latte - $5.00\n"
-        "• Cappuccino - $5.00\n"
-        "• Americano - $4.50\n"
-        "• Mocha - $5.50\n\n"
-        "*Specialty Drinks:*\n"
-        "• Dirty Matcha - $7.50\n"
-        "• Spanish Latte - $7.00\n"
-        "• Brown Sugar Latte - $7.00\n\n"
+        "• Iced Black - $4.50\n"
+        "• Ice White - $5.50\n"
+        "*Fresh Bakes:*\n"
+        "• Banana Bread - $4.00\n"
+        "• Earl Grey Madeleines - $5.00\n"
+        "• Matcha Madeleines - $6.00\n\n"
         "🥛 *Add-ons:*\n"
         "• Fresh Milk (+$0.50)\n"
         "• Oat Milk (+$1.00)\n"
@@ -101,6 +93,20 @@ async def coffee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     ctype = query.data.replace("type_", "")
     context.user_data['current'] = {'type': ctype, 'addons': []}
     
+    # Skip temperature selection for Bakes
+    if ctype == "Bakes":
+        varieties = MENU[ctype]['varieties']
+        keyboard = []
+        for variety_name, price in varieties.items():
+            keyboard.append([InlineKeyboardButton(f"{variety_name} - ${price:.2f}", callback_data=f"var_{variety_name}")])
+        
+        await query.edit_message_text(
+            f"You selected: {ctype}\n\nChoose your item:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return VARIETY
+    
+    # For drinks, show temperature options
     keyboard = [[InlineKeyboardButton(t, callback_data=f"temp_{t}")] for t in TEMPS]
     await query.edit_message_text(
         f"You selected: {ctype}\n\nChoose temperature:",
@@ -143,6 +149,36 @@ async def variety_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     base_price = MENU[ctype]['varieties'][variety]
     context.user_data['current']['base_price'] = base_price
     
+    # Skip add-ons for Bakes and go directly to cart
+    if ctype == "Bakes":
+        context.user_data['current']['temp'] = 'N/A'  # Set temp as N/A for bakes
+        context.user_data['current']['price'] = base_price
+        context.user_data['cart'].append(context.user_data['current'].copy())
+        
+        total = sum(item['price'] for item in context.user_data['cart'])
+        summary = "📋 Your Cart:\n\n"
+        for i, item in enumerate(context.user_data['cart'], 1):
+            # Display differently for Bakes (no temperature)
+            if item['type'] == 'Bakes':
+                summary += f"{i}. {item['variety']}\n"
+                summary += f"   ${item['price']:.2f}\n\n"
+            else:
+                addons_text = ", ".join(item['addons']) if item['addons'] else "None"
+                summary += f"{i}. {item['variety']}\n"
+                summary += f"   {item['temp']} {item['type']}\n"
+                summary += f"   Add-ons: {addons_text}\n"
+                summary += f"   ${item['price']:.2f}\n\n"
+        summary += f"Total: ${total:.2f}"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Add Another Item", callback_data="add_more")],
+            [InlineKeyboardButton("💳 Proceed to Checkout", callback_data="checkout")]
+        ]
+        
+        await query.edit_message_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
+        return REVIEW
+    
+    # For drinks, show add-ons
     keyboard = []
     for addon, price in ADDONS_MENU.items():
         price_text = f" (+${price:.2f})" if price > 0 else ""
