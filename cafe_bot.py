@@ -481,7 +481,7 @@ async def mark_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please specify order ID.\nUsage: /ready ORD12345")
         return
     
-    order_id = context.args[0].upper()
+    order_id = context.args[0]
     
     if not os.path.exists('orders/orders.csv'):
         await update.message.reply_text("No orders found!")
@@ -498,7 +498,8 @@ async def mark_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if i == 0:
             continue
         
-        if row[0] == order_id and row[8] == 'pending':
+        status = row[8] if len(row) > 8 else "pending"
+        if row[0] == order_id and status == "pending":
             reader[i][8] = 'ready'
             customer_chat_id = row[5]
             customer_name = row[3]
