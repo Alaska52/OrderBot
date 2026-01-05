@@ -16,6 +16,61 @@ from telegram.ext import (
     filters,
 )
 
+from telegram.error import TimedOut, NetworkError
+
+async def send_paynow_qr_safe(context, chat_id: int, total: float, order_id: str):
+    if not PAYNOW_QR.exists():
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ QR code image not found.\nAmount to pay: ${total:.2f}\nOrder #{order_id}"
+        )
+        return
+
+    try:
+        with PAYNOW_QR.open("rb") as photo:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                caption=f"💳 Scan to pay ${total:.2f}\nOrder #{order_id}",
+            )
+    except (TimedOut, NetworkError) as e:
+        # Fallback: don't crash the conversation
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"⚠️ Couldn’t send QR image (network timeout).\n"
+                f"Amount: ${total:.2f}\nOrder #{order_id}\n\n"
+                f"Please try again in a moment."
+            )
+        )
+
+
+from telegram.error import BadRequest
+
+import re
+
+def md_escape(s: str) -> str:
+    """
+    Escapes Telegram legacy Markdown (parse_mode="Markdown") special chars.
+    This prevents 'Can't parse entities' when user data contains _ * ` [ ] etc.
+    """
+    if s is None:
+        return ""
+    s = str(s)
+
+    # Escape: _ * ` [
+    # (Telegram legacy Markdown is picky; these are the main breakers.)
+    return re.sub(r"([_*`\[])", r"\\\1", s)
+
+
+async def safe_answer(query):
+    try:
+        await query.answer()
+    except BadRequest:
+        # "Query is too old..." or "query id is invalid" -> ignore
+        pass
+
+
 # ---------------------------
 # Logging
 # ---------------------------
@@ -70,9 +125,6 @@ MENU = {
 ADDONS_MENU = {
     "Oat Milk": 1.00,
     "Extra Espresso Shot": 1.00,
-    "Normal Sugar": 0.00,
-    "Kosong (No Sugar)": 0.00,
-    "Siew Dai (Less Sugar)": 0.00,
 }
 
 
@@ -147,8 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "• Matcha Madeleines - $6.00\n\n"
         "🥛 *Add-ons:*\n"
         "• Oat Milk (+$1.00)\n"
-        "• Add Espresso Shot (+$1.00)\n"
-        "• Sugar options (Normal/Kosong/Siew Dai)\n\n"
+        "• Add Espresso Shot (+$1.00)\n\n"
         "Let's start your order! 👇"
     )
 
@@ -162,7 +213,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def coffee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    await safe_answer(query)
 
     ctype = query.data.replace("type_", "", 1)
     context.user_data["current"] = {"type": ctype, "addons": [], "temp": "N/A"}
@@ -182,7 +233,8 @@ async def coffee_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def variety_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    await safe_answer(query)
+
 
     variety = query.data.replace("var_", "", 1)
     curr = context.user_data["current"]
@@ -230,7 +282,8 @@ async def variety_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def addon_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    await safe_answer(query)
+
 
     curr = context.user_data["current"]
     data = query.data or ""
@@ -292,7 +345,8 @@ async def addon_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def review_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    await safe_answer(query)
+
 
     if query.data == "add_more":
         keyboard = [[InlineKeyboardButton(t, callback_data=f"type_{t}")] for t in MENU.keys()]
@@ -490,7 +544,8 @@ async def view_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def pending_buttons_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await safe_answer(query)
+
     data = query.data or ""
 
     # Refresh
@@ -550,7 +605,7 @@ async def pending_buttons_callback(update: Update, context: ContextTypes.DEFAULT
         header, rows = load_orders_rows()
         text, markup = build_pending_message(rows)
 
-        confirm = f"✅ Marked `{order_id}` as READY.\n"
+        confirm = f"✅ Marked `{md_escape(order_id)}` as READY.\n"
         if notify_error:
             confirm += f"⚠️ Notify failed: {notify_error}\n"
         confirm += "\n"
@@ -566,31 +621,29 @@ async def pending_buttons_callback(update: Update, context: ContextTypes.DEFAULT
 MAX_PENDING_SHOW = 10  # show full details for this many pending orders (avoid Telegram 4096 limit)
 
 def format_items_multiline(items_text: str) -> str:
-    """Convert the CSV 'Items' field into bullet lines."""
+    """Convert the CSV 'Items' field into bullet lines (Markdown-safe)."""
     items_text = (items_text or "").strip()
     if not items_text:
         return "   • (no items recorded)"
 
     parts = [p.strip() for p in items_text.split(";") if p.strip()]
     if not parts:
-        return f"   • {items_text}"
+        return f"   • {md_escape(items_text)}"
 
-    return "\n".join([f"   • {p}" for p in parts])
+    return "\n".join([f"   • {md_escape(p)}" for p in parts])
 
 def build_pending_message(rows):
-    """
-    Returns (text, keyboard) for pending orders view.
-    Keeps your existing callback_data: ready:<order_id> and pending:refresh.
-    """
     pending = [r for r in rows if get_status(r) == "pending"]
 
+    # Always return (text, markup) even when empty
     if not pending:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")]])
-        return "✅ No pending orders! All caught up!", keyboard
-
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")]
+        ])
+        return "✅ No pending orders! All caught up!", None
+        # return "none", None
 
     shown = pending[:MAX_PENDING_SHOW]
-
     text = "⏳ *Pending Orders* (tap a button to mark READY)\n\n"
 
     keyboard = []
@@ -611,7 +664,6 @@ def build_pending_message(rows):
             f"{format_items_multiline(items)}\n\n"
         )
 
-        # keep your current behavior: clicking this marks ready + notifies customer
         keyboard.append([InlineKeyboardButton(f"✅ READY: {order_id}", callback_data=f"ready:{order_id}")])
 
     if len(pending) > MAX_PENDING_SHOW:
@@ -619,6 +671,7 @@ def build_pending_message(rows):
 
     keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="pending:refresh")])
     return text, InlineKeyboardMarkup(keyboard)
+
 
 async def mark_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manual command fallback: /ready ORDER_ID"""
